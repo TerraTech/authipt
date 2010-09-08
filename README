@@ -1,0 +1,40 @@
+This program requires ipset as a part of iptables/netfilter.
+
+On ubuntu, the required programs and modules can be installed with;
+ sudo apt-get install ipset xtables-addons-source
+ sudo module-assistant auto-install xtables-addons
+
+Add a authipt user and group.
+Create a directory to contain the 'records' and set appropriate permissions;
+ mkdir /var/authipt
+ chown root:authipt /var/authipt
+ chmod ug+sw /var/authipt
+
+Compile the program with GCC and place in a useful spot with correct permissions;
+ gcc authipt -o authipt
+ chown root:authipt authipt
+ cp authipt /bin/authipt
+ chmod ug+s /bin/authipt
+ chmod o-rwx /bin/authipt      -- blocks non-authipt users from access
+
+Now create a group for all users that should have to authenticate;
+ addgroup authipt
+Add the users you want to have access;
+ adduser myuser authipt
+Set that users shell to /bin/authipt;
+ chsh myuser
+
+
+When you log in as myuser, you should see something like this;
+ ipset v4.1: Set already exists
+ Hello myuser. You are authenticated from host "192.168.2.201"
+
+That means the users IP is in the IP set named authipt. That set is of type iphash.
+If you for instance want to allow forwarding for that user, you could add an
+iptables rule like
+ -A FORWARD -m set --match-set authipt src -j ACCEPT
+which will allow forwarding for all packets with a source of any IP address in the
+set of authenticated users. When a user logs out, its IP address will be removed
+from the IP set. If an existing session exists for an IP, or a user logs in twice,
+the previous session for that IP is terminated and a new one is started.
+

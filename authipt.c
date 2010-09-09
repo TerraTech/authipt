@@ -51,6 +51,9 @@ char ipsrc[128]; /* xxx.xxx.xxx.xxx\0 */
 char luser[32];
 char proctitle[128];
 
+static void	print_message(char *);
+static int	user_allowed(char *);
+static int	user_banned(char *);
 static int	change_filter(int, const char *, const char *);
 static int	change_table(int, const char *);
 static void	do_death(int);
@@ -67,7 +70,7 @@ int main(int argc, char *argv[]) {
 	openlog("authipd",LOG_PID|LOG_NDELAY,LOG_DAEMON);
 	
 	if ((cp = getenv("SSH_TTY")) == NULL) {
-		syslog(LOG_ERR, "non-interactive session connection for authpf");
+		syslog(LOG_ERR, "non-interactive session connection for authipt");
 		exit(1);
 	}
 	
@@ -196,7 +199,7 @@ int main(int argc, char *argv[]) {
 			goto dogdeath;
 		}
 		sleep(1);
-		/* re-open, and try again. The previous authpf process
+		/* re-open, and try again. The previous authipt process
 		 * we killed above should unlink the file and release
  		 * it's lock, giving us a chance to get it now
 		 */
@@ -212,7 +215,13 @@ int main(int argc, char *argv[]) {
 		do_death(0);
 	}
 
-	/* TODO: CHECK IF USER IS BANNED */
+	/* check if user is banned, TODO: implement explicit allowance */
+	if (user_banned(luser)) {	
+		syslog(LOG_INFO, "User %s was not allowed to authenticate", luser);
+		sleep(10);
+		do_death(0);
+	}
+
 	/* TODO: CONFIG FILE */
 
 	/* TODO: remove stale rulesets */
@@ -231,7 +240,6 @@ int main(int argc, char *argv[]) {
 		change_filter(0,luser,ipsrc);
 		do_death(0);
 	}
-	
 	/* revoke privs */
 
 	/*uid = getuid();
@@ -244,14 +252,25 @@ int main(int argc, char *argv[]) {
 	while (1) {
 		syslog(LOG_INFO, "User %s@%s authenticated.", luser, ipsrc);
 		struct stat sb;
-		char *path_message;
-		printf("Hello %s.\n", luser);
-		printf("You are authenticated from host %s\n.", ipsrc);
+		char *motdpath;
+		FILE *f;
+		printf("Hello %s - you are authenticated from host %s.\n", luser, ipsrc);
 		snprintf(proctitle, sizeof(proctitle), "%s@%s", luser, ipsrc);
 		prctl(PR_SET_NAME, proctitle, NULL, NULL, NULL);
 		/* TODO: rename the process better than this - prctl has a limit of 15 letters */	
 
-		/* TODO: print custom message from file*/
+		if (asprintf(&motdpath, "%s/%s/motd",PATH_USER_DIR, luser) == -1)
+			do_death(1);
+		if (stat(motdpath, &sb) == -1 || ! S_ISREG(sb.st_mode)) {
+			free(motdpath);
+			motdpath = strdup(PATH_MOTD);
+			if (motdpath == NULL)
+				do_death(1);
+			/* We don't care if the file in PATH_MOTD does not exist */
+		}
+		print_message(motdpath);
+		free(motdpath);
+		
 		while(1) {
 			sleep(10);
 			if (want_death)
@@ -261,13 +280,65 @@ int main(int argc, char *argv[]) {
 
 	return 0;
 dogdeath:
-	printf("\n\nSorry, this service is currently unavailable due to ");
-	printf("technical difficulties\n");
+	printf("\n\nAuthentication is unavailable due to technical difficulties.\n");
+	print_message(PATH_PROBLEM);
 	printf("Your authentication process (pid %ld) was unable to run\n", (long)getpid());
 	sleep(180);
 die:
 	do_death(0);
 	return 0;
+}
+
+static int user_allowed(char *name) {
+	return 1; /* All allowed by default */
+}
+
+static int user_banned(char *name) {
+	FILE	*f;
+	int	 n;
+	char	 tmp[MAXPATHLEN];
+	n = snprintf(tmp, sizeof(tmp), "%s/%s/banned", PATH_USER_DIR, luser);
+	if (n < 0 || (u_int)n >= sizeof(tmp)) {
+		syslog(LOG_ERR, "banned file directory name for user %s, was too long",name);
+		return(1); /* do not allow login */
+	}
+	if ((f = fopen(tmp, "r")) == NULL) {
+		if (errno == ENOENT) {
+			return(0); /* file does not exist - user is not banned */
+		} else {
+			syslog(LOG_ERR, "could not open banned file for user %s: %s",
+				name,strerror(errno));
+			return(1); /* do not allow login */
+		}
+	} else {
+		/* file exists and user is explicitly banned */
+		syslog(LOG_INFO, "User %s is banned - banfile exists", name);
+		printf("Your account is banned from authentication.\n");
+		print_message(tmp); /* print the contents of the "banned" file */
+		fclose(f);
+		return(1);
+	}
+}
+
+/*
+ * splatter a file to stdout - max line length of 1024,
+ * used for spitting message files at users to tell them
+ * they've been bad or we're unavailable.
+ */
+static void print_message(char *filename) {
+	char	 buf[1024];
+	FILE	*f;
+	if ((f = fopen(filename, "r")) == NULL)
+		return; /* fail silently, we don't care if it isn't there */
+	do {
+		if (fgets(buf, sizeof(buf), f) == NULL) {
+			fflush(stdout);
+			fclose(f);
+			return;
+		}
+	} while (fputs(buf, stdout) != EOF && !feof(f));
+	fflush(stdout);
+	fclose(f);
 }
 
 static int change_filter(int add, const char *luser, const char *ipsrc) {

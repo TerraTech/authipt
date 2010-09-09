@@ -1,6 +1,9 @@
 /*
  * Copyright (C) 1998 - 2007 Bob Beck (beck@openbsd.org).
- * 			2010 Andreas Bertheussen (andreas@elektronisk.org) 
+ *
+ * Copyright (C) 2010 Andreas Bertheussen (andreas@elektronisk.org).
+ *	- based on $OpenBSD: authpf.c,v 1.115 2010/09/02 14:01:04 sobrado Exp$	
+ *	- adapted for linux/ipset
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -69,52 +72,57 @@ int main(int argc, char *argv[]) {
 	}
 	
 	if ((cp = getenv("SSH_CLIENT")) == NULL) {
-		syslog(LOG_ERR, "cannot determine connection source");
+		syslog(LOG_ERR, "could not determine connection source");
 		exit(1);
 	}
 	strncpy(ipsrc, cp, sizeof(ipsrc)); /* fit the stirng into ipsrc */
 	if (strlen(ipsrc) < strlen(cp)){
-		syslog(LOG_ERR, "SSH_CLIENT variable too long");
+		syslog(LOG_ERR, "SSH_CLIENT variable was too long");
 		exit(1);
 	}
 
 	cp = strchr(ipsrc, ' '); /* Look for the space delimiter after IP address */
 	if (cp == NULL) {
-		syslog(LOG_ERR, "corrupt SSH_CLIENT variable %s", ipsrc);
+		syslog(LOG_ERR, "SSH_CLIENT variable was corrupt: %s", ipsrc);
 		exit(1);
 	}
 	*cp = '\0';
 	
-	if (inet_pton(AF_INET, ipsrc, &ina) != 1 &&
-		inet_pton(AF_INET6, ipsrc, &ina) != 1) {
-		syslog(LOG_ERR, "cannot determine IP from SSH_CLIENT %s", ipsrc);
+	/* IPv6, not supported by ipset :/ */
+	if (inet_pton(AF_INET, ipsrc, &ina) != 1 /*&&
+		inet_pton(AF_INET6, ipsrc, &ina) != 1*/) {
+		syslog(LOG_ERR, "could not determine IP from SSH_CLIENT %s", ipsrc);
 		exit(1);
 	}
 	uid = getuid();
 	pw = getpwuid(uid);
 	if (pw == NULL) {
-		syslog(LOG_ERR, "cannot find user for uid %u", uid);
+		syslog(LOG_ERR, "could not find user for uid %u", uid);
 		exit(1);	
 	}
-	shell = pw->pw_shell; /* Make sure the users shell is set to authipf (user is allowed to run authipf) */
+	shell = pw->pw_shell; 
+	
+	/* Make sure the users shell is set to authipf (user is allowed to run authipf) */
 	if (strcmp(shell, PATH_AUTHIPT_SHELL)) {
-		//syslog(LOG_ERR, "wrong shell for user %s, uid %u", pw->pw_name, pw->pw_uid);
-		// exit(1);  /* TODO: ENABLE THIS */
+		syslog(LOG_ERR, "wrong shell for user %s, uid %u", pw->pw_name, pw->pw_uid);
+		exit(1);
 	}
 	
 	strncpy(luser, pw->pw_name, sizeof(luser));
 	if (strlen(pw->pw_name) > strlen(luser)) {
-		syslog(LOG_ERR, "username too long: %s", pw->pw_name);
+		syslog(LOG_ERR, "username was too long: %s", pw->pw_name);
 		exit(1);
 	}
+
 	/* The filename to the file for the users IP, e.g. /var/authipt/192.168.2.44 */
 	n = snprintf(pidfile, sizeof(pidfile),"%s/%s",
 		PATH_PIDFILE,
 		ipsrc
 		);
-	/* a return value of /size/ (sizeof(pidfile)) or more means output was truncated */
+
+	/* a return value of (sizeof(pidfile)) or more means output was truncated */
 	if (n < 0 || (u_int)n >= sizeof(pidfile)) {
-		syslog(LOG_ERR, "path to pidfile too long");
+		syslog(LOG_ERR, "path to pidfile was too long");
 		exit(1);
 	}
 	
@@ -144,6 +152,7 @@ int main(int argc, char *argv[]) {
 	do {
 		int save_errno, otherpid = -1;
 		char otherluser[32];
+		
 		if ((pidfd = open(pidfile, O_RDWR|O_CREAT, 0664)) == -1 ||
 		    (pidfp = fdopen(pidfd, "r+")) == NULL) {
 			if (pidfd != -1)
@@ -151,9 +160,14 @@ int main(int argc, char *argv[]) {
 			syslog(LOG_ERR, "cannot open or create %s: %s", pidfile, strerror(errno));
 			goto die;
 		}
+
 		fchmod(pidfd, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP);
+
+		/* Try to get an exclusive lock on the pidfile. If successful, break */
 		if (flock(fileno(pidfp), LOCK_EX|LOCK_NB) == 0)
 			break;
+
+		/* File is locked, read it to find and kill owner process */
 		save_errno = errno;
 		rewind(pidfp);
 		if (fscanf(pidfp, "%d\n%31s\n", &otherpid, otherluser) != 2)
@@ -162,8 +176,8 @@ int main(int argc, char *argv[]) {
 			pidfile, otherpid, strerror(save_errno));
 
 		if (otherpid > 0) {
-			syslog(LOG_INFO, "killing prior auth (pid %d) of %s by user %s",
-				otherpid, ipsrc, otherluser);
+			syslog(LOG_INFO, "Killing existing auth for %s@%s (pid %d)",
+				otherluser, ipsrc, otherpid);
 			if (kill((pid_t) otherpid, SIGTERM) == -1) {
 				syslog(LOG_INFO, "could not kill process %d: (%m)", otherpid);
 			}
@@ -175,12 +189,11 @@ int main(int argc, char *argv[]) {
  		 */
  		if (want_death || ++lockcnt > 10) {
 			if (!want_death)
-				syslog(LOG_ERR, "cannot kill previous authpf (pid %d)", otherpid);
+				syslog(LOG_ERR, "could not kill previous authipt (pid %d) for IP %s", otherpid, ipsrc);
 			fclose(pidfp);
 			pidfp = NULL;
 			pidfd = -1;
 			goto dogdeath;
-			
 		}
 		sleep(1);
 		/* re-open, and try again. The previous authpf process
@@ -209,13 +222,12 @@ int main(int argc, char *argv[]) {
 	fflush(pidfp);
 	(void) ftruncate(fileno(pidfp),ftello(pidfp));
 
-	//syslog(LOG_ERR, "Adding IP address %s", ipsrc);
 	if (change_filter(1,luser,ipsrc) == -1) {
 		printf("Unable to modify filters\n");
 		do_death(0);
 	}
 	if (change_table(1, ipsrc) == -1){
-		printf("Unable to modify table\n");
+		printf("Unable to modify ip set\n");
 		change_filter(0,luser,ipsrc);
 		do_death(0);
 	}
@@ -228,8 +240,9 @@ int main(int argc, char *argv[]) {
 		do_death(1);
 	}*/
 
-
+	/* Greet authenticated user */
 	while (1) {
+		syslog(LOG_INFO, "User %s@%s authenticated.", luser, ipsrc);
 		struct stat sb;
 		char *path_message;
 		printf("Hello %s.\n", luser);
@@ -275,13 +288,13 @@ static int change_table(int add, const char *ipsrc) {
 	char *ipstr = NULL;
 	char *pargv[5] = {PATH_IPSET, "-N", "authipt", "iphash", NULL};
 	
-	if (luser == NULL || !luser[0] || ipsrc ==NULL || !ipsrc[0]) {
+	if (luser == NULL || !luser[0] || ipsrc == NULL || !ipsrc[0]) {
 		syslog(LOG_ERR, "invalid luser/ipsrc");
 		goto error;
 	}
 	
 	switch(pid = fork()) {
-		case -1: syslog(LOG_ERR, "fork failed");
+		case -1: syslog(LOG_ERR, "fork for set creation failed");
 			goto error;
 		case 0: gid = getgid();
 			if (setregid(gid,gid) == -1) {
@@ -289,13 +302,13 @@ static int change_table(int add, const char *ipsrc) {
 			}
 			execvp(PATH_IPSET, pargv);
 			syslog(LOG_ERR, "exec of %s failed", PATH_IPSET);
-			_exit(1); /* abort the child process */
-		default: break;/* this is the parent process, continue */
+			_exit(1);
+		default: break;
 	}
 	
 	waitpid(pid, &s, 0);
 
-	pargv[3] = ipsrc;
+	pargv[3] = (char*)ipsrc;
 	if (add) {
 		//printf("[+] Adding %s to set of authenticated users\n", ipsrc);
 		pargv[1] = "-A";
@@ -307,7 +320,7 @@ static int change_table(int add, const char *ipsrc) {
 		case -1:
 			syslog(LOG_ERR, "fork failed");
 			goto error;
-		case 0: /* This is the child process - execute command */
+		case 0: /* This is the child process - execute program*/
 			gid = getgid();
 			if (setregid(gid, gid) == -1) {
 				syslog(LOG_ERR, "setregid: %s", strerror(errno));
@@ -332,10 +345,10 @@ static void need_death(int signo) {
 static void do_death(int active) {
 	int ret = 0;
 	if (active) {
+		syslog(LOG_INFO, "User %s@%s no longer authenticated.", luser, ipsrc);
 		change_filter(0, luser, ipsrc);
 		change_table(0, ipsrc);
 		/* TODO: kill states */
-
 	}
 
 	if (pidfile[0] && pidfd != -1)

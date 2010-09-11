@@ -240,13 +240,6 @@ int main(int argc, char *argv[]) {
 		change_filter(0,luser,ipsrc);
 		do_death(0);
 	}
-	/* revoke privs */
-
-	/*uid = getuid();
-	if (setresuid(uid, uid, uid) == -1) {
-		syslog(LOG_INFO, "setresuid: %s", strerror(errno));
-		do_death(1);
-	}*/
 
 	/* Greet authenticated user */
 	while (1) {
@@ -299,7 +292,7 @@ static int user_banned(char *name) {
 	char	 tmp[MAXPATHLEN];
 	n = snprintf(tmp, sizeof(tmp), "%s/%s/banned", PATH_USER_DIR, luser);
 	if (n < 0 || (u_int)n >= sizeof(tmp)) {
-		syslog(LOG_ERR, "banned file directory name for user %s, was too long",name);
+		syslog(LOG_ERR, "banned file directory name for user %s, was too long", name);
 		return(1); /* do not allow login */
 	}
 	if ((f = fopen(tmp, "r")) == NULL) {
@@ -341,14 +334,45 @@ static void print_message(char *filename) {
 	fclose(f);
 }
 
+/* Filter change is done externally through a shell script called modfilter. */
 static int change_filter(int add, const char *luser, const char *ipsrc) {
-	if (add) {
-		//printf("[+] Adding user-specific rules for %s@%s\n", luser, ipsrc);
-	} else {
-		//printf("[+] Removing user-specific rules for %s@%s\n", luser, ipsrc);
+	pid_t pid;
+	gid_t gid;
+	int s;
+	char *pargv[7] = {PATH_MODFILTER, (char*)luser, "up", (char*)ipsrc, "0", PATH_USER_DIR, NULL};
+	char pidstring[32] = "";
 
+	snprintf(pidstring, 31, "%ld", (long)getpid());
+	
+	if (luser == NULL || !luser[0] || ipsrc == NULL || !ipsrc[0] || !pidstring[0]) {
+		syslog(LOG_ERR, "invalid luser/ipsrc/pid");
+		goto error;
 	}
+	pargv[4] = pidstring;
+	if (!add) {
+		syslog(LOG_INFO, "Removing potential rules for %s@%s, pid %s", luser, ipsrc, pidstring);
+		pargv[2] = "down";
+	} else {
+		syslog(LOG_INFO, "Adding potential rules for %s@%s, pid %s", luser, ipsrc, pidstring);
+	}
+
+	switch(pid = fork()) {
+		case -1: syslog(LOG_ERR, "fork for filter modification failed");
+			goto error;
+		case 0: gid = getgid();
+			if (setregid(gid,gid) == -1) {
+				syslog(LOG_ERR, "setregid: %s", strerror(errno));
+			}
+			execvp(PATH_MODFILTER, pargv);
+			syslog(LOG_ERR, "exec of %s failed", PATH_MODFILTER);
+			_exit(1);
+		default: break;
+	}
+	waitpid(pid, &s, 0);
+	
 	return(0);
+error:
+	return(-1);
 }
 
 static int change_table(int add, const char *ipsrc) {
@@ -358,6 +382,7 @@ static int change_table(int add, const char *ipsrc) {
 	int s;
 	char *ipstr = NULL;
 	char *pargv[5] = {PATH_IPSET, "-N", "authipt", "iphash", NULL};
+	
 	
 	if (luser == NULL || !luser[0] || ipsrc == NULL || !ipsrc[0]) {
 		syslog(LOG_ERR, "invalid luser/ipsrc");
@@ -376,16 +401,15 @@ static int change_table(int add, const char *ipsrc) {
 			_exit(1);
 		default: break;
 	}
-	
 	waitpid(pid, &s, 0);
 
 	pargv[3] = (char*)ipsrc;
 	if (add) {
-		//printf("[+] Adding %s to set of authenticated users\n", ipsrc);
 		pargv[1] = "-A";
+		syslog(LOG_INFO, "Adding %s to authorized user table.", ipsrc);
 	} else {
-		//printf("[-] Removing %s from set of authenticated users\n", ipsrc);
 		pargv[1] = "-D";
+		syslog(LOG_INFO, "Removing %s from authorized user table.", ipsrc);
 	}
 	switch(pid = fork()) {
 		case -1:
@@ -402,11 +426,9 @@ static int change_table(int add, const char *ipsrc) {
 		default: break; /* this is the parent process, continue */
 	}
 	waitpid(pid, &s, 0);
-
 	return(0);
 error:
 	return(-1);
-
 }
 
 static void need_death(int signo) {
@@ -416,15 +438,15 @@ static void need_death(int signo) {
 static void do_death(int active) {
 	int ret = 0;
 	if (active) {
-		syslog(LOG_INFO, "User %s@%s no longer authenticated.", luser, ipsrc);
 		change_filter(0, luser, ipsrc);
 		change_table(0, ipsrc);
+		syslog(LOG_INFO, "User %s@%s no longer authenticated.", luser, ipsrc);
 		/* TODO: kill states */
 	}
 
 	if (pidfile[0] && pidfd != -1)
 		if (unlink(pidfile) == -1)
-			syslog(LOG_ERR, "cannot unlink (%s) (%m)",pidfile);
+			syslog(LOG_ERR, "could not unlink (%s) (%m)",pidfile);
 	exit(0);
 
 }

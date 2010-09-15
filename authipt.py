@@ -12,9 +12,8 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-import os, sys, time, pwd, fcntl
-import syslog, socket
-import signal, subprocess
+import os, sys, time, pwd, grp, fcntl
+import syslog, socket, signal, subprocess
 import setproctitle
 
 # termination handler does not exit directly. wantdeath should be checked
@@ -26,7 +25,44 @@ def needdeath(arg1, arg2):
 
 # updaterules() and updateset() invoke ipset and iptables
 def updaterules(add, userip, username):
-	# TODO: me
+	uprulesfilename = "/etc/authipt/users/%s/uprules" % username
+	downrulesfilename = "/etc/authipt/users/%s/downrules" % username
+
+	# verify that user has either both up/downrules, or neither
+	if (os.path.isfile(uprulesfilename) ^ os.path.isfile(downrulesfilename)):
+		syslog.syslog(LOG_ERR, "user %s has a lonely \"uprules\" /or/ \"downrules\" file" % username)
+		return False
+	# check that the rulefile for the requested action exists
+	if add == True:
+		rulesfilename = uprulesfilename
+	else:
+		rulesfilename = downrulesfilename
+	
+	if not os.path.isfile(rulesfilename):
+		return True	# no rulefiles exist, nothing more to do here
+	
+	try:
+		rulesfile = open(rulesfilename, "r")
+		rules = rulesfile.readlines()
+	except IOError, (errno, strerror):
+		syslog.syslog(LOG_ERR, "could not open and/or read rulefile %s: %s" % (rulesfilename, strerror))
+		return False
+	
+	# replace the rule macros $username, $userip and $userpid with the appropriate values
+	rules = ''.join(rules)
+	rules = rules.replace("$username", username)
+	rules = rules.replace("$userip", userip)
+	rules = rules.replace("$userpid", "%i" % os.getpid())
+	
+	# run iptables-restore, and feed it the rules
+	iptargs = "/sbin/iptables-restore -n".split(' ')
+	try:
+		ipt = subprocess.Popen(iptargs, shell=False, stdin=subprocess.PIPE)
+	except OSError, (errno, strerror):
+		syslog.syslog(LOG_ERR, "could not call iptables-restore: %s" % strerror)
+		return False
+	
+	ipt.communicate(rules)	# write rule to stdin of iptables-restore
 	return True
 
 def updateset(add, userip):
@@ -39,7 +75,7 @@ def updateset(add, userip):
 			syslog.syslog(LOG_ERR, "could not call ipset for table creation: %s" % strerror)
 			return False
 		
-		ipset.wait()
+		ipset.communicate()	# waits until ipset terminates
 		ipsetargs[1] = "-A"
 	else:
 		ipsetargs[1] = "-D"
@@ -51,7 +87,7 @@ def updateset(add, userip):
 		syslog.syslog(LOG_ERR, "could not call ipset for IP insertion/removal: %s" % strerror)
 		return False
 
-	ipset.wait()
+	ipset.communicate()
 	return True
 
 def do_death(active):
@@ -59,7 +95,7 @@ def do_death(active):
 	pidfile.close()
 	if os.path.isfile(pidfile.name):
 		os.unlink(pidfile.name)
-	if active == True:
+	if active == 1:
 		updaterules(False, userip, username)
 		updateset(False, userip)
 	sys.exit()
@@ -110,7 +146,6 @@ if userpwd.pw_shell != "/bin/authipt":
 	sys.exit()
 
 # make sure user is in the authipt group
-import grp
 try:
 	group = grp.getgrnam("authipt")
 except KeyError:
@@ -208,9 +243,11 @@ except IOError, (errno, strerror):
 	syslog.syslog(LOG_ERR, "could not write pidfile %s: %s" % (pidfilename, strerror))
 
 if not updaterules(True, userip, username):
+	updaterules(False, userip, username)
 	do_death(0)
 
 if not updateset(True, userip):
+	updateset(False, userip)
 	updaterules(False, userip, username)
 	do_death(0)
 

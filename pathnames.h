@@ -1,7 +1,0 @@
-#define PATH_PROBLEM "/etc/authipt/problem"
-#define PATH_MOTD "/etc/authipt/motd"
-#define PATH_USER_DIR "/etc/authipt/users"
-#define PATH_AUTHIPT_SHELL "/bin/authipt"
-#define PATH_PIDFILE "/var/authipt"
-#define PATH_IPSET "/usr/sbin/ipset"
-#define PATH_MODFILTER "/bin/modfilter"

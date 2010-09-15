@@ -104,10 +104,23 @@ if userpwd.pw_name != username:
 	syslog.syslog(LOG_ERR, "SUDO_UID and SUDO_USER do not refer to same user")
 	sys.exit()
 
-# check the shell
-#if userpwd.pw_shell != "/bin/authipt":
-	#syslog.syslog(LOG_ERR, "User %s does not have authipt as shell" % username)
-	#sys.exit()
+# only let users with a correct shell, run authipt
+if userpwd.pw_shell != "/bin/authipt":
+	syslog.syslog(LOG_ERR, "denied user %s access because authipt is not the users shell (%s)" % (username, userpwd.pw_shell))
+	sys.exit()
+
+# make sure user is in the authipt group
+import grp
+try:
+	group = grp.getgrnam("authipt")
+except KeyError:
+	syslog.syslog(LOG_ERR, "group authipt does not exist")
+	sys.exit()
+
+if username not in group.gr_mem:
+	syslog.syslog(LOG_ERR, "denied user %s access because user is not in authipt group" % username)
+	sys.exit()
+
 
 if SSH_CONNECTION.count(' ') != 3:
 	syslog.syslog(LOG_ERR, "SSH_CONNECTION was malformed")

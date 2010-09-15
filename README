@@ -1,40 +1,81 @@
-This program requires ipset as a part of iptables/netfilter.
+REQUIRED SOFTWARE
 
-On ubuntu, the required programs and modules can be installed with;
- sudo apt-get install ipset xtables-addons-source
- sudo module-assistant auto-install xtables-addons
+This program requires ipset as a part of iptables/netfilter, and also the
+python module called setproctitle.
 
-Add a authipt user and group.
-Create a directory to contain the 'records' and set appropriate permissions;
- mkdir /var/authipt
- chown root:authipt /var/authipt
- chmod ug+sw /var/authipt
+On ubuntu, the required programs and modules can be installed (as root)
+ apt-get install ipset xtables-addons-source
+ module-assistant auto-install xtables-addons
+ apt-get install python-setuptools
+ easy_install setproctitle
 
-Compile the program with GCC and place in a useful spot with correct permissions;
- gcc authipt -o authipt
- chown root:authipt authipt
- cp authipt /bin/authipt
- chmod ug+s /bin/authipt
- chmod o-rwx /bin/authipt      -- blocks non-authipt users from access
+INSTALLING
 
-Now create a group for all users that should have to authenticate;
+Add an authipt group.
  addgroup authipt
-Add the users you want to have access;
+Create a directory to contain the 'records'. This will contain files describing
+the IP addresses and usernamees of authenticated users, and you may want to
+limit access to root.
+ mkdir /var/authipt
+ chmod 700 /var/authipt
+
+Copy the authipt.py script to a system directory like /bin/, and set
+appropriate permissions. It only needs to be read by root. We will use a
+bash script called authipt to run the python script with sudo. This bash script
+will only have to be run by users in the authipt group. Example script file
+placed at /bin/authipt:
+ #!/bin/bash
+ /usr/bin/sudo -E /usr/bin/python /bin/authipt.py
+ exit
+
+ chown root:authipt /bin/authipt
+ chmod 750 /bin/authipt			# only root and group can read/execute
+
+To allow users in the authipt group to use sudo, edit the sudoers file. This
+should be done with the "visudo" program. Adding the following line will let
+users in the authipt group run the script as root, without a password prompt:
+ %authipt ALL = (ALL) NOPASSWD: SETENV: /usr/bin/python /home/andreas/authipt/authipt.py
+
+Users of authipt must be added to the authipt group.
  adduser myuser authipt
 Set that users shell to /bin/authipt;
  chsh myuser
 
+Now configure the important files:
 
-When you log in as myuser, you should see something like this;
- ipset v4.1: Set already exists
- Hello myuser. You are authenticated from host "192.168.2.201"
+IMPORTANT FILES
 
-That means the users IP is in the IP set named authipt. That set is of type iphash.
-If you for instance want to allow forwarding for that user, you could add an
-iptables rule like
+The following files are optional but useful.
+
+/etc/authipt/motd
+	Contains a message displayed to authenticated users.
+/etc/authipt/users/USERNAME/motd
+	A user-specific welcome message, overriding the default message.
+/etc/authipt/users/USERNAME/banned
+	If this file exists, the user USERNAME will be denied authentication
+	and the file contents will be shown as a message to that user.
+
+Both of the following files are required for user-specific iptables rules:
+
+/etc/authipt/users/USERNAME/uprules
+	The user-specific firewall rules to apply on successful authentication.
+	Rules are written in the same format as iptables-save returns.
+/etc/authipt/users/USERNAME/downrules
+	User-specific firewall rules to apply when the auth session ends. Must
+	remove all rules present in the uprules. Will not be applied unless
+	uprules exist.
+
+To see error or information messages from authipt, see /var/log/daemon.log.
+
+In addition to the user-specific uprules/downrules files, the authenticated
+users IP address will be added to an ipset named authipt. This lets you add
+rules to iptables that apply to all authenticated users, by referring to the
+ipset as a source or destination address. When an authenticated users session
+ends, the users IP address is removed from the set. The following example rule
+allows forwarding for all authenticated users;
  -A FORWARD -m set --match-set authipt src -j ACCEPT
-which will allow forwarding for all packets with a source of any IP address in the
-set of authenticated users. When a user logs out, its IP address will be removed
-from the IP set. If an existing session exists for an IP, or a user logs in twice,
-the previous session for that IP is terminated and a new one is started.
+See documentation for iptables on how to use ipsets.
 
+AUTHORS
+authipt is written by Andreas Bertheussen <andreas@elektronisk.org>
+authipt imitates the C-program authpf by Bob Beck.

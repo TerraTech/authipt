@@ -241,15 +241,14 @@ try:
 	pidfile.flush()
 except IOError, (errno, strerror):
 	syslog.syslog(LOG_ERR, "could not write pidfile %s: %s" % (pidfilename, strerror))
+	do_death(0)
 
 if not updaterules(True, userip, username):
 	updaterules(False, userip, username)
 	do_death(0)
 
 if not updateset(True, userip):
-	updateset(False, userip)
-	updaterules(False, userip, username)
-	do_death(0)
+	do_death(1)
 
 syslog.syslog(LOG_INFO, "user %s@%s authenticated." % (username, userip))
 print "Hello %s - you are authenticated from host %s." % (username, userip)

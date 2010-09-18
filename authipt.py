@@ -14,7 +14,7 @@
 
 import os, sys, time, pwd, grp, fcntl
 import syslog, socket, signal, subprocess
-import setproctitle
+import setproctitle, ConfigParser
 
 # termination handler does not exit directly. wantdeath should be checked
 # regularly through the program
@@ -25,12 +25,12 @@ def needdeath(arg1, arg2):
 
 # updaterules() and updateset() invoke ipset and iptables
 def updaterules(add, userip, username):
-	uprulesfilename = "/etc/authipt/users/%s/uprules" % username
-	downrulesfilename = "/etc/authipt/users/%s/downrules" % username
+	uprulesfilename = '/etc/authipt/users/%s/uprules' % username
+	downrulesfilename = '/etc/authipt/users/%s/downrules' % username
 
 	# verify that user has either both up/downrules, or neither
 	if (os.path.isfile(uprulesfilename) ^ os.path.isfile(downrulesfilename)):
-		syslog.syslog(LOG_ERR, "user %s has a lonely \"uprules\" /or/ \"downrules\" file" % username)
+		syslog.syslog(LOG_ERR, 'user %s has a lonely \'uprules\' /or/ \'downrules\' file' % username)
 		return False
 	# check that the rulefile for the requested action exists
 	if add == True:
@@ -42,49 +42,58 @@ def updaterules(add, userip, username):
 		return True	# no rulefiles exist, nothing more to do here
 	
 	try:
-		rulesfile = open(rulesfilename, "r")
+		rulesfile = open(rulesfilename, 'r')
 		rules = rulesfile.readlines()
 	except IOError, (errno, strerror):
-		syslog.syslog(LOG_ERR, "could not open and/or read rulefile %s: %s" % (rulesfilename, strerror))
+		syslog.syslog(LOG_ERR, 'could not open and/or read rulefile %s: %s' % (rulesfilename, strerror))
 		return False
 	
 	# replace the rule macros $username, $userip and $userpid with the appropriate values
 	rules = ''.join(rules)
-	rules = rules.replace("$username", username)
-	rules = rules.replace("$userip", userip)
-	rules = rules.replace("$userpid", "%i" % os.getpid())
+	rules = rules.replace('$username', username)
+	rules = rules.replace('$userip', userip)
+	rules = rules.replace('$userpid', '%i' % os.getpid())
 	
 	# run iptables-restore, and feed it the rules
-	iptargs = "/sbin/iptables-restore -n".split(' ')
+	global conf
+	try:	iptrestorepath = conf.get('authipt', 'iptrestore')
+	except:	iptrestorepath = '/sbin/iptables-restore'
+
+	iptargs = '%s -n' % iptrestorepath
+	iptargs = iptargs.split(' ')
 	try:
 		ipt = subprocess.Popen(iptargs, shell=False, stdin=subprocess.PIPE)
 	except OSError, (errno, strerror):
-		syslog.syslog(LOG_ERR, "could not call iptables-restore: %s" % strerror)
+		syslog.syslog(LOG_ERR, 'could not call iptables-restore: %s' % strerror)
 		return False
 	
 	ipt.communicate(rules)	# write rule to stdin of iptables-restore
 	return True
 
 def updateset(add, userip):
-	ipsetargs = "/usr/sbin/ipset -N authipt iphash".split(' ')
+	global conf
+	try:	ipsetpath = conf.get('authipt', 'ipset')
+	except:	ipsetpath = '/usr/sbin/ipset'
+	ipsetargs = '%s -N authipt iphash' % ipsetpath
+	ipsetargs = ipsetargs.split(' ')
 	if add == True:
 		# make sure set exists before adding ip to it
 		try:
 			ipset = subprocess.Popen(ipsetargs, shell=False, stderr=subprocess.PIPE)
 		except OSError, (errno, strerror):
-			syslog.syslog(LOG_ERR, "could not call ipset for table creation: %s" % strerror)
+			syslog.syslog(LOG_ERR, 'could not call ipset for table creation: %s' % strerror)
 			return False
 		
 		ipset.communicate()	# waits until ipset terminates
-		ipsetargs[1] = "-A"
+		ipsetargs[1] = '-A'
 	else:
-		ipsetargs[1] = "-D"
+		ipsetargs[1] = '-D'
 	
 	ipsetargs[3] = userip
 	try:
 		ipset = subprocess.Popen(ipsetargs, shell=False)
 	except OSError, (errno, strerror):
-		syslog.syslog(LOG_ERR, "could not call ipset for IP insertion/removal: %s" % strerror)
+		syslog.syslog(LOG_ERR, 'could not call ipset for IP insertion/removal: %s' % strerror)
 		return False
 
 	ipset.communicate()
@@ -104,77 +113,91 @@ def do_death(active):
 
 def printfile(filename):
 	try:
-		f = open(filename, "r")
+		f = open(filename, 'r')
 		for line in f:
 			print line
 		f.close()
 	except IOError:
 		pass	# ignore errors
 	return
+
 LOG_INFO = syslog.LOG_INFO
 LOG_ERR = syslog.LOG_ERR
-syslog.openlog("authipt", syslog.LOG_PID|syslog.LOG_NDELAY, syslog.LOG_DAEMON)
+syslog.openlog('authipt', syslog.LOG_PID|syslog.LOG_NDELAY, syslog.LOG_DAEMON)
+
+conf = ConfigParser.RawConfigParser()
+
+try:	conf.readfp(open('/etc/authipt/authipt.conf'))
+except:	pass
 
 # we must be root (uid 0) to run (through sudo)
 if  os.getuid() != 0:
-	syslog.syslog(LOG_ERR, "user with uid %i was denied to run authipt (not root)" % os.getuid())
-	print "You are not root, %s." % pwd.getpwuid(os.getuid()).pw_name
+	syslog.syslog(LOG_ERR, 'user with uid %i was denied to run authipt (not root)' % os.getuid())
+	print 'You are not root, %s.' % pwd.getpwuid(os.getuid()).pw_name
 	sys.exit()
 
 try:
 	SSH_TTY = os.environ['SSH_TTY']
 	SSH_CONNECTION = os.environ['SSH_CONNECTION']
 except KeyError:
-	syslog.syslog(LOG_ERR, "SSH_TTY or SSH_CONNECTION were not provided")
+	syslog.syslog(LOG_ERR, 'SSH_TTY or SSH_CONNECTION were not provided')
 	sys.exit()
 
 try:
 	userid = int(os.environ['SUDO_UID'])
 	username = os.environ['SUDO_USER']
 except KeyError:
-	syslog.syslog(LOG_ERR, "SUDO_UID or SUDO_USER were not provided")
+	syslog.syslog(LOG_ERR, 'SUDO_UID or SUDO_USER were not provided')
 	sys.exit()
 
 userpwd = pwd.getpwuid(userid)
 if userpwd.pw_name != username:
-	syslog.syslog(LOG_ERR, "SUDO_UID and SUDO_USER do not refer to same user")
+	syslog.syslog(LOG_ERR, 'SUDO_UID and SUDO_USER do not refer to same user')
 	sys.exit()
 
+try:	shellname = conf.get('authipt', 'shell')
+except:	shellname = '/bin/authipt'
+
 # only let users with a correct shell, run authipt
-if userpwd.pw_shell != "/bin/authipt":
-	syslog.syslog(LOG_ERR, "denied user %s access because authipt is not the users shell (%s)" % (username, userpwd.pw_shell))
+if userpwd.pw_shell != shellname:
+	syslog.syslog(LOG_ERR, 'denied user %s access because authipt is not the users shell (%s)' % (username, userpwd.pw_shell))
 	sys.exit()
 
 # make sure user is in the authipt group
+try:	groupname = conf.get('authipt', 'group')
+except:	groupiname = 'authipt'
+
 try:
-	group = grp.getgrnam("authipt")
+	group = grp.getgrnam(groupname)
 except KeyError:
-	syslog.syslog(LOG_ERR, "group authipt does not exist")
+	syslog.syslog(LOG_ERR, 'group authipt does not exist')
 	sys.exit()
 
 if username not in group.gr_mem:
-	syslog.syslog(LOG_ERR, "denied user %s access because user is not in authipt group" % username)
+	syslog.syslog(LOG_ERR, 'denied user %s access because user is not in authipt group' % username)
 	sys.exit()
 
 
 if SSH_CONNECTION.count(' ') != 3:
-	syslog.syslog(LOG_ERR, "SSH_CONNECTION was malformed")
+	syslog.syslog(LOG_ERR, 'SSH_CONNECTION was malformed')
 	sys.exit()
 
 userip = SSH_CONNECTION.split(' ', 2)[0]	# first element is ip
 
 # do a sanity check of the IP address size. NOTE: must be extended for IPv6
 if (len(userip) > 16) or (len(userip) < 7):
-	syslog.syslog(LOG_ERR, "IP address \"%s\" was too long or short", userip)
+	syslog.syslog(LOG_ERR, 'IP address \'%s\' was too long or short', userip)
 	sys.exit()
 
 try:
 	socket.inet_pton(socket.AF_INET, userip)
 except socket.error:
-	syslog.syslog(LOG_ERR, "IP address \"%s\" was invalid" % userip )
+	syslog.syslog(LOG_ERR, 'IP address \'%s\' was invalid' % userip )
 	sys.exit()
 
-pidfilename = "/var/authipt/%s" % userip
+try:	piddir = conf.get('authipt', 'piddir')
+except:	piddir = '/var/authipt'
+pidfilename = '%s/%s' % (piddir, userip)
 
 signal.signal(signal.SIGTERM, needdeath)
 signal.signal(signal.SIGINT, needdeath)
@@ -184,6 +207,10 @@ signal.signal(signal.SIGPIPE, needdeath)
 signal.signal(signal.SIGHUP, needdeath)
 signal.signal(signal.SIGTSTP, needdeath)
 
+try:	confdir = conf.get('authipt', 'confdir')
+except:	confdir = '/etc/authipt'
+
+
 tries = 0
 retry = True
 wantdeath = False
@@ -191,23 +218,23 @@ while retry:
 	retry = False
 	try:
 		if os.path.isfile(pidfilename):
-			pidfile = open(pidfilename, "rw+")
+			pidfile = open(pidfilename, 'rw+')
 		else:
-			pidfile = open(pidfilename, "wr+")
+			pidfile = open(pidfilename, 'wr+')
 	except IOError, (errno, strerror):
-		syslog.syslog(LOG_ERR, "unable to open pidfile %s" % pidfilename)
+		syslog.syslog(LOG_ERR, 'unable to open pidfile %s' % pidfilename)
 		do_death(0)
 	
 	pidfiledesc = pidfile.fileno()
 	try:
 		fcntl.flock(pidfiledesc, fcntl.LOCK_EX|fcntl.LOCK_NB)
 	except IOError:
-		syslog.syslog(LOG_ERR, "pidfile %s is locked, killing owner" % pidfilename)
+		syslog.syslog(LOG_ERR, 'pidfile %s is locked, killing owner' % pidfilename)
 		retry = True
 		pidfile.seek(0)
 		lines = pidfile.readlines()
 		if len(lines) != 2:
-			syslog.syslog(LOG_ERR, "pidfile %s was corrupt" % pidfilename)
+			syslog.syslog(LOG_ERR, 'pidfile %s was corrupt' % pidfilename)
 			pidfile.close()
 			retry = True
 		userpid = int(lines[0])	# first line is pid, second is username
@@ -215,9 +242,9 @@ while retry:
 
 	tries += 1
 	if tries == 5:
-		syslog.syslog(LOG_ERR, "gave up grabbing lock for %s" % pidfilename)
-		print "Authentication is unavailable due to technical difficulties"
-		# TODO: blurb message
+		syslog.syslog(LOG_ERR, 'gave up grabbing lock for %s' % pidfilename)
+		print 'Authentication is unavailable due to technical difficulties'
+		printfile('%s/problem' % confdir)
 		time.sleep(60)
 		do_death(0)
 	if wantdeath == True:
@@ -226,21 +253,21 @@ while retry:
 
 # we have the pidfile lock, and can register a new authentication
 
-banfilename = "/etc/authipt/users/%s/banned" % username
+banfilename = '%s/users/%s/banned' % (confdir, username)
 if os.path.isfile(banfilename):
-	print "Your account is banned from authentication."
-	syslog.syslog(LOG_INFO, "user %s was rejected due to existing banfile")
+	print 'Your account is banned from authentication.'
+	syslog.syslog(LOG_INFO, 'user %s was rejected due to existing banfile')
 	printfile(banfilename)
 	time.sleep(60)	# give time to read the message
 	do_death(0)
 
 try:
 	pidfile.seek(0)
-	pidfile.writelines(["%i\n" % os.getpid(), username])
+	pidfile.writelines(['%i\n' % os.getpid(), username])
 	pidfile.truncate()
 	pidfile.flush()
 except IOError, (errno, strerror):
-	syslog.syslog(LOG_ERR, "could not write pidfile %s: %s" % (pidfilename, strerror))
+	syslog.syslog(LOG_ERR, 'could not write pidfile %s: %s' % (pidfilename, strerror))
 	do_death(0)
 
 if not updaterules(True, userip, username):
@@ -250,10 +277,10 @@ if not updaterules(True, userip, username):
 if not updateset(True, userip):
 	do_death(1)
 
-syslog.syslog(LOG_INFO, "user %s@%s authenticated." % (username, userip))
-print "Hello %s - you are authenticated from host %s." % (username, userip)
-printfile("/etc/authipt/motd")
-setproctitle.setproctitle("authipt: %s@%s" % (username, userip))
+syslog.syslog(LOG_INFO, 'user %s@%s authenticated.' % (username, userip))
+print 'Hello %s - you are authenticated from host %s.' % (username, userip)
+printfile('%s/motd' % confdir)
+setproctitle.setproctitle('authipt: %s@%s' % (username, userip))
 
 while True:	# sleep until killed.
 	if wantdeath == True:

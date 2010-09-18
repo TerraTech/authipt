@@ -59,6 +59,10 @@ def updaterules(add, userip, username):
 	try:	iptrestorepath = conf.get('authipt', 'iptrestore')
 	except:	iptrestorepath = '/sbin/iptables-restore'
 
+	if not os.path.isfile(iptrestorepath):
+		syslog.syslog(LOG_ERR, 'could not find iptables-restore at %s' % iptrestorepath)
+		return False
+
 	iptargs = '%s -n' % iptrestorepath
 	iptargs = iptargs.split(' ')
 	try:
@@ -74,7 +78,14 @@ def updateset(add, userip):
 	global conf
 	try:	ipsetpath = conf.get('authipt', 'ipset')
 	except:	ipsetpath = '/usr/sbin/ipset'
-	ipsetargs = '%s -N authipt iphash' % ipsetpath
+
+	if not os.path.isfile(ipsetpath):
+		syslog.syslog(LOG_ERR, 'could not find ipset at %s' % ipsetpath)
+		return False
+
+	try:	ipsetname = conf.get('authipt', 'ipsetname')
+	except:	ipsetname = 'authipt'
+	ipsetargs = '%s -N %s iphash' % (ipsetpath, ipsetname)
 	ipsetargs = ipsetargs.split(' ')
 	if add == True:
 		# make sure set exists before adding ip to it
@@ -158,6 +169,10 @@ if userpwd.pw_name != username:
 try:	shellname = conf.get('authipt', 'shell')
 except:	shellname = '/bin/authipt'
 
+if not os.path.isfile(shellname):
+	syslog.syslog(LOG_ERR, "current required shell %s does not exist, which means noone can log in with it")
+	sys.exit()
+
 # only let users with a correct shell, run authipt
 if userpwd.pw_shell != shellname:
 	syslog.syslog(LOG_ERR, 'denied user %s access because authipt is not the users shell (%s)' % (username, userpwd.pw_shell))
@@ -170,11 +185,11 @@ except:	groupiname = 'authipt'
 try:
 	group = grp.getgrnam(groupname)
 except KeyError:
-	syslog.syslog(LOG_ERR, 'group authipt does not exist')
+	syslog.syslog(LOG_ERR, 'required group %s does not exist', groupname)
 	sys.exit()
 
 if username not in group.gr_mem:
-	syslog.syslog(LOG_ERR, 'denied user %s access because user is not in authipt group' % username)
+	syslog.syslog(LOG_ERR, 'denied user %s access because user is not in expected group %s' % (username, groupname))
 	sys.exit()
 
 
@@ -197,6 +212,11 @@ except socket.error:
 
 try:	piddir = conf.get('authipt', 'piddir')
 except:	piddir = '/var/authipt'
+
+if not os.path.isdir(piddir):
+	syslog.syslog(LOG_ERR, 'PID dir %s did not exist')
+	sys.exit()
+
 pidfilename = '%s/%s' % (piddir, userip)
 
 signal.signal(signal.SIGTERM, needdeath)
@@ -210,6 +230,12 @@ signal.signal(signal.SIGTSTP, needdeath)
 try:	confdir = conf.get('authipt', 'confdir')
 except:	confdir = '/etc/authipt'
 
+if not os.path.isdir(confdir):
+	syslog.syslog(LOG_ERR, 'conf dir %s did not exist')
+	sys.exit()
+
+try:	messagetimeout = conf.getint('authipt', 'messagetimeout')
+except:	messagetimeout = 60
 
 tries = 0
 retry = True
@@ -245,7 +271,7 @@ while retry:
 		syslog.syslog(LOG_ERR, 'gave up grabbing lock for %s' % pidfilename)
 		print 'Authentication is unavailable due to technical difficulties'
 		printfile('%s/problem' % confdir)
-		time.sleep(60)
+		time.sleep(messagetimeout)
 		do_death(0)
 	if wantdeath == True:
 		do_death(0)
@@ -258,7 +284,7 @@ if os.path.isfile(banfilename):
 	print 'Your account is banned from authentication.'
 	syslog.syslog(LOG_INFO, 'user %s was rejected due to existing banfile')
 	printfile(banfilename)
-	time.sleep(60)	# give time to read the message
+	time.sleep(messagetimeout)	# give time to read the message
 	do_death(0)
 
 try:

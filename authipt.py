@@ -126,7 +126,7 @@ def printfile(filename):
 	try:
 		f = open(filename, 'r')
 		for line in f:
-			print line
+			print line,	# comma supresses superfluous \n char
 		f.close()
 	except IOError:
 		pass	# ignore errors

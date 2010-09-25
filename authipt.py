@@ -180,7 +180,7 @@ if userpwd.pw_shell != shellname:
 
 # make sure user is in the authipt group
 try:	groupname = conf.get('authipt', 'group')
-except:	groupiname = 'authipt'
+except:	groupname = 'authipt'
 
 try:
 	group = grp.getgrnam(groupname)
